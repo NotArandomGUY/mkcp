@@ -274,6 +274,7 @@ struct IKCPSEG
 {
   struct IQUEUEHEAD node;
   IUINT32 conv;
+  IUINT32 token;
   IUINT32 cmd;
   IUINT32 frg;
   IUINT32 wnd;
@@ -293,12 +294,14 @@ struct IKCPSEG
 //---------------------------------------------------------------------
 struct IKCPCB
 {
-  IUINT32 conv, mtu, mss, state;
+  IUINT32 conv, mtu, mss, state, token;
   IUINT32 snd_una, snd_nxt, rcv_nxt;
   IUINT32 ts_recent, ts_lastack, ssthresh;
   IINT32 rx_rttval, rx_srtt, rx_rto, rx_minrto;
   IUINT32 snd_wnd, rcv_wnd, rmt_wnd, cwnd, probe;
   IUINT32 current, interval, ts_flush, xmit;
+  IUINT32 pkt_sent, pkt_lost, pktloss, ts_last_pktloss;
+  IUINT32 rx_size, tx_size, rx_bandwidth, tx_bandwidth, ts_last_bandwidth;
   IUINT32 nrcv_buf, nsnd_buf;
   IUINT32 nrcv_que, nsnd_que;
   IUINT32 nodelay, updated;

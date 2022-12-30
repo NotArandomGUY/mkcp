@@ -208,6 +208,7 @@ static int ikcp_output(ikcpcb *kcp, const void *data, int size)
   }
   if (size == 0)
     return 0;
+  kcp->tx_size += size;
   return kcp->output((const char *)data, size, kcp, kcp->user);
 }
 
@@ -252,6 +253,17 @@ ikcpcb *ikcp_create(IUINT32 conv, void *user)
   kcp->mtu = IKCP_MTU_DEF;
   kcp->mss = kcp->mtu - IKCP_OVERHEAD;
   kcp->stream = 0;
+
+  kcp->pkt_sent = 0;
+  kcp->pkt_lost = 0;
+  kcp->pktloss = 0;
+  kcp->ts_last_pktloss = 0;
+
+  kcp->rx_size = 0;
+  kcp->tx_size = 0;
+  kcp->rx_bandwidth = 0;
+  kcp->tx_bandwidth = 0;
+  kcp->ts_last_bandwidth = 0;
 
   kcp->buffer = (char *)ikcp_malloc((kcp->mtu + IKCP_OVERHEAD) * 3);
   if (kcp->buffer == NULL)
@@ -816,6 +828,8 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
   IUINT32 maxack = 0, latest_ts = 0;
   int flag = 0;
 
+  kcp->rx_size += size;
+
   if (ikcp_canlog(kcp, IKCP_LOG_INPUT))
   {
     ikcp_log(kcp, IKCP_LOG_INPUT, "[RI] %d bytes", (int)size);
@@ -826,7 +840,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 
   while (1)
   {
-    IUINT32 ts, sn, len, una, conv;
+    IUINT32 ts, sn, len, una, conv, token;
     IUINT16 wnd;
     IUINT8 cmd, frg;
     IKCPSEG *seg;
@@ -838,6 +852,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
     if (conv != kcp->conv)
       return -1;
 
+    data = ikcp_decode32u(data, &token);
     data = ikcp_decode8u(data, &cmd);
     data = ikcp_decode8u(data, &frg);
     data = ikcp_decode16u(data, &wnd);
@@ -850,6 +865,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 
     if ((long)size < (long)len || (int)len < 0)
       return -2;
+
+    if (token != kcp->token)
+      return -4;
 
     if (cmd != IKCP_CMD_PUSH && cmd != IKCP_CMD_ACK && cmd != IKCP_CMD_WASK &&
         cmd != IKCP_CMD_WINS)
@@ -910,6 +928,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
         {
           seg = ikcp_segment_new(kcp, len);
           seg->conv = conv;
+          seg->token = token;
           seg->cmd = cmd;
           seg->frg = frg;
           seg->wnd = wnd;
@@ -1001,6 +1020,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 static char *ikcp_encode_seg(char *ptr, const IKCPSEG *seg)
 {
   ptr = ikcp_encode32u(ptr, seg->conv);
+  ptr = ikcp_encode32u(ptr, seg->token);
   ptr = ikcp_encode8u(ptr, (IUINT8)seg->cmd);
   ptr = ikcp_encode8u(ptr, (IUINT8)seg->frg);
   ptr = ikcp_encode16u(ptr, (IUINT16)seg->wnd);
@@ -1041,6 +1061,7 @@ void ikcp_flush(ikcpcb *kcp)
     return;
 
   seg.conv = kcp->conv;
+  seg.token = kcp->token;
   seg.cmd = IKCP_CMD_ACK;
   seg.frg = 0;
   seg.wnd = ikcp_wnd_unused(kcp);
@@ -1141,6 +1162,7 @@ void ikcp_flush(ikcpcb *kcp)
     kcp->nsnd_buf++;
 
     newseg->conv = kcp->conv;
+    newseg->token = kcp->token;
     newseg->cmd = IKCP_CMD_PUSH;
     newseg->wnd = seg.wnd;
     newseg->ts = current;
@@ -1185,6 +1207,8 @@ void ikcp_flush(ikcpcb *kcp)
       }
       segment->resendts = current + segment->rto;
       lost = 1;
+
+      kcp->pkt_lost++;
     }
     else if (segment->fastack >= resent)
     {
@@ -1226,6 +1250,8 @@ void ikcp_flush(ikcpcb *kcp)
       {
         kcp->state = (IUINT32)-1;
       }
+
+      kcp->pkt_sent++;
     }
   }
 
@@ -1264,6 +1290,60 @@ void ikcp_flush(ikcpcb *kcp)
 }
 
 //---------------------------------------------------------------------
+// ikcp_update_bandwidth
+//---------------------------------------------------------------------
+void ikcp_update_bandwidth(ikcpcb *kcp)
+{
+  IUINT32 current = kcp->current;
+  IUINT32 delta = current - kcp->ts_last_bandwidth;
+
+  if (delta + 10000 >= (IKCP_DEADLINK * 1000))
+  {
+    kcp->ts_last_bandwidth = current;
+    kcp->rx_size = 0;
+    kcp->tx_size = 0;
+  }
+  else if (delta >= 1000)
+  {
+    kcp->rx_bandwidth = (kcp->rx_size * 1000) / delta;
+    kcp->tx_bandwidth = (kcp->tx_size * 1000) / delta;
+
+    kcp->ts_last_bandwidth = current;
+    kcp->rx_size = 0;
+    kcp->tx_size = 0;
+  }
+}
+
+//---------------------------------------------------------------------
+// ikcp_update_pktloss
+//---------------------------------------------------------------------
+void ikcp_update_pktloss(ikcpcb *kcp)
+{
+  IUINT32 current = kcp->current;
+  IUINT32 delta = current - kcp->ts_last_pktloss;
+  if (delta + 10000 >= (IKCP_DEADLINK * 1000))
+  {
+    kcp->ts_last_pktloss = current;
+    kcp->pkt_sent = 0;
+    kcp->pkt_lost = 0;
+  }
+  else if (delta >= 1000)
+  {
+    IUINT32 pktloss = kcp->pkt_sent;
+    if (pktloss != 0)
+    {
+      pktloss = (kcp->pkt_lost * 100) / pktloss;
+    }
+
+    kcp->pktloss = pktloss;
+
+    kcp->ts_last_pktloss = current;
+    kcp->pkt_sent = 0;
+    kcp->pkt_lost = 0;
+  }
+}
+
+//---------------------------------------------------------------------
 // update state (call it repeatedly, every 10ms-100ms), or you can ask
 // ikcp_check when to call it again (without ikcp_input/_send calling).
 // 'current' - current timestamp in millisec.
@@ -1297,6 +1377,9 @@ void ikcp_update(ikcpcb *kcp, IUINT32 current)
     }
     ikcp_flush(kcp);
   }
+
+  ikcp_update_bandwidth(kcp);
+  ikcp_update_pktloss(kcp);
 }
 
 //---------------------------------------------------------------------
@@ -1351,6 +1434,12 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
     minimal = kcp->interval;
 
   return current + minimal;
+}
+
+int ikcp_settoken(ikcpcb *kcp, int token)
+{
+  kcp->token = token;
+  return 0;
 }
 
 int ikcp_setmtu(ikcpcb *kcp, int mtu)
@@ -1428,6 +1517,14 @@ int ikcp_wndsize(ikcpcb *kcp, int sndwnd, int rcvwnd)
 }
 
 int ikcp_waitsnd(const ikcpcb *kcp) { return kcp->nsnd_buf + kcp->nsnd_que; }
+
+int ikcp_rtt(const ikcpcb *kcp) { return kcp->rx_srtt; }
+
+int ikcp_pktloss(const ikcpcb *kcp) { return kcp->pktloss; }
+
+int ikcp_rx_bandwidth(const ikcpcb *kcp) { return kcp->rx_bandwidth; }
+
+int ikcp_tx_bandwidth(const ikcpcb *kcp) { return kcp->tx_bandwidth; }
 
 // read conv
 IUINT32 ikcp_getconv(const void *ptr)
