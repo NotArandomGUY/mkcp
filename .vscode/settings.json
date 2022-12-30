@@ -1,0 +1,6 @@
+{
+  "sonarlint.pathToCompileCommands": "${workspaceFolder}\\build\\compile_commands.json",
+  "C_Cpp.clang_format_style": "{ IndentPPDirectives: BeforeHash, BreakBeforeBraces: Allman }",
+  "C_Cpp.clang_format_fallbackStyle": "GNU",
+  "C_Cpp.formatting": "clangFormat"
+}
