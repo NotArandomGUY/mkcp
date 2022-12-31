@@ -577,6 +577,12 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
     len -= size;
   }
 
+  if (ikcp_canlog(kcp, IKCP_LOG_SEND))
+  {
+    ikcp_log(kcp, IKCP_LOG_SEND, "send len=%d count=%u", (int)len,
+             (unsigned int)count);
+  }
+
   return 0;
 }
 
@@ -953,7 +959,8 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
       kcp->probe |= IKCP_ASK_TELL;
       if (ikcp_canlog(kcp, IKCP_LOG_IN_PROBE))
       {
-        ikcp_log(kcp, IKCP_LOG_IN_PROBE, "input probe");
+        ikcp_log(kcp, IKCP_LOG_IN_PROBE, "input probe, una=%lu wnd=%lu",
+                 (unsigned long)(una), (unsigned long)(wnd));
       }
     }
     else if (cmd == IKCP_CMD_WINS)
@@ -961,8 +968,8 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
       // do nothing
       if (ikcp_canlog(kcp, IKCP_LOG_IN_WINS))
       {
-        ikcp_log(kcp, IKCP_LOG_IN_WINS, "input wins: %lu",
-                 (unsigned long)(wnd));
+        ikcp_log(kcp, IKCP_LOG_IN_WINS, "input una=%lu wins: %lu",
+                 (unsigned long)(una), (unsigned long)(wnd));
       }
     }
     else
@@ -1082,6 +1089,13 @@ void ikcp_flush(ikcpcb *kcp)
     }
     ikcp_ack_get(kcp, i, &seg.sn, &seg.ts);
     ptr = ikcp_encode_seg(ptr, &seg);
+    if (ikcp_canlog(kcp, IKCP_LOG_OUT_ACK))
+    {
+      ikcp_log(kcp, IKCP_LOG_OUT_ACK,
+               "output ack: sn=%lu ts=%ld una=%lu wnd=%lu",
+               (unsigned long)seg.sn, (long)seg.ts, (unsigned long)seg.una,
+               (unsigned long)seg.wnd);
+    }
   }
 
   kcp->ackcount = 0;
@@ -1125,6 +1139,11 @@ void ikcp_flush(ikcpcb *kcp)
       ptr = buffer;
     }
     ptr = ikcp_encode_seg(ptr, &seg);
+    if (ikcp_canlog(kcp, IKCP_LOG_OUT_PROBE))
+    {
+      ikcp_log(kcp, IKCP_LOG_OUT_PROBE, "output probe, una=%lu wnd=%lu",
+               (unsigned long)seg.una, (unsigned long)seg.wnd);
+    }
   }
 
   // flush window probing commands
@@ -1138,6 +1157,11 @@ void ikcp_flush(ikcpcb *kcp)
       ptr = buffer;
     }
     ptr = ikcp_encode_seg(ptr, &seg);
+    if (ikcp_canlog(kcp, IKCP_LOG_OUT_WINS))
+    {
+      ikcp_log(kcp, IKCP_LOG_OUT_WINS, "output una=%lu wnd=%lu",
+               (unsigned long)seg.una, (unsigned long)seg.wnd);
+    }
   }
 
   kcp->probe = 0;
@@ -1239,6 +1263,14 @@ void ikcp_flush(ikcpcb *kcp)
       }
 
       ptr = ikcp_encode_seg(ptr, segment);
+
+      if (ikcp_canlog(kcp, IKCP_LOG_OUT_DATA))
+      {
+        ikcp_log(kcp, IKCP_LOG_OUT_DATA,
+                 "output psh: sn=%lu ts=%lu una=%lu wnd=%lu",
+                 (unsigned long)segment->sn, (unsigned long)segment->ts,
+                 (unsigned long)segment->una, (unsigned long)segment->wnd);
+      }
 
       if (segment->len > 0)
       {
