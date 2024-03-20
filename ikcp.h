@@ -398,6 +398,18 @@ extern "C"
   // get how many packet is waiting to be sent
   int ikcp_waitsnd(const ikcpcb *kcp);
 
+  // get current round-trip time
+  int ikcp_rtt(const ikcpcb *kcp);
+
+  // get total number of detected packet losses
+  int ikcp_pktloss(const ikcpcb *kcp);
+
+  // get current receiving bandwidth usage
+  int ikcp_rx_bandwidth(const ikcpcb *kcp);
+
+  // get current transmitting bandwidth usage
+  int ikcp_tx_bandwidth(const ikcpcb *kcp);
+
   // fastest: ikcp_nodelay(kcp, 1, 20, 2, 1)
   // nodelay: 0:disable(default), 1:enable
   // interval: internal update timer interval in millisec, default is 100ms
