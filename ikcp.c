@@ -852,7 +852,10 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 
   while (1)
   {
-    IUINT32 ts, sn, len, una, conv, token, byte_check_code;
+    IUINT32 ts, sn, len, una, conv, token;
+#if IKCP_BYTE_CHECK == 1
+    IUINT32 byte_check_code;
+#endif
     IUINT16 wnd;
     IUINT8 cmd, frg;
     IKCPSEG *seg;
@@ -872,7 +875,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
     data = ikcp_decode32u(data, &sn);
     data = ikcp_decode32u(data, &una);
     data = ikcp_decode32u(data, &len);
+#if IKCP_BYTE_CHECK == 1
     data = ikcp_decode32u(data, &byte_check_code);
+#endif
 
     size -= IKCP_OVERHEAD;
 
@@ -1138,7 +1143,9 @@ void ikcp_flush(ikcpcb *kcp)
   seg.len = 0;
   seg.sn = 0;
   seg.ts = 0;
+#if IKCP_BYTE_CHECK == 1
   seg.byte_check_code = 0;
+#endif
 
   // flush acknowledges
   count = kcp->ackcount;
