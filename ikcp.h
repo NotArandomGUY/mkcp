@@ -268,6 +268,13 @@ typedef struct IQUEUEHEAD iqueue_head;
 #endif
 
 //=====================================================================
+// BYTE CHECK SWITCH
+//=====================================================================
+#ifndef IKCP_BYTE_CHECK
+  #define IKCP_BYTE_CHECK 1
+#endif
+
+//=====================================================================
 // SEGMENT
 //=====================================================================
 struct IKCPSEG
@@ -286,6 +293,9 @@ struct IKCPSEG
   IUINT32 rto;
   IUINT32 fastack;
   IUINT32 xmit;
+#if IKCP_BYTE_CHECK == 1
+  IUINT32 byte_check_code;
+#endif
   char data[1];
 };
 
@@ -320,6 +330,10 @@ struct IKCPCB
   int fastlimit;
   int nocwnd, stream;
   int logmask;
+#if IKCP_BYTE_CHECK == 1
+  IUINT8 byte_check_mode;
+  IUINT8 byte_check_test;
+#endif
   int (*output)(const char *buf, int len, struct IKCPCB *kcp, void *user);
   void (*writelog)(const char *log, struct IKCPCB *kcp, void *user);
 };
@@ -385,6 +399,17 @@ extern "C"
 
   // flush pending data
   void ikcp_flush(ikcpcb *kcp);
+
+#if IKCP_BYTE_CHECK == 1
+  // set byte check mode
+  int ikcp_bytecheck(ikcpcb *kcp, char mode, char test);
+
+  // calculate crc32 checksum for data
+  IUINT32 ikcp_crc32(IUINT32 seed, const char *data, long size);
+
+  // calculate xxhash checksum for data
+  IUINT64 ikcp_xxhash(const char *data, long size);
+#endif
 
   // check the size of next message in the recv queue
   int ikcp_peeksize(const ikcpcb *kcp);

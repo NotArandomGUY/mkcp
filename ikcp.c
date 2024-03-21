@@ -10,6 +10,8 @@
 //
 //=====================================================================
 #include "ikcp.h"
+#include "crc32.h"
+#include "xxhash.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -294,6 +296,10 @@ ikcpcb *ikcp_create(IUINT32 conv, void *user)
   kcp->nodelay = 0;
   kcp->updated = 0;
   kcp->logmask = 0;
+#if IKCP_BYTE_CHECK == 1
+  kcp->byte_check_mode = 0;
+  kcp->byte_check_test = 0;
+#endif
   kcp->ssthresh = IKCP_THRESH_INIT;
   kcp->fastresend = 0;
   kcp->fastlimit = IKCP_FASTACK_LIMIT;
@@ -846,7 +852,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 
   while (1)
   {
-    IUINT32 ts, sn, len, una, conv, token;
+    IUINT32 ts, sn, len, una, conv, token, byte_check_code;
     IUINT16 wnd;
     IUINT8 cmd, frg;
     IKCPSEG *seg;
@@ -866,6 +872,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
     data = ikcp_decode32u(data, &sn);
     data = ikcp_decode32u(data, &una);
     data = ikcp_decode32u(data, &len);
+    data = ikcp_decode32u(data, &byte_check_code);
 
     size -= IKCP_OVERHEAD;
 
@@ -924,11 +931,57 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
     {
       if (ikcp_canlog(kcp, IKCP_LOG_IN_DATA))
       {
+#if IKCP_BYTE_CHECK == 1
+        ikcp_log(
+            kcp, IKCP_LOG_IN_DATA,
+            "input psh: sn=%lu ts=%lu una=%lu wnd=%lu, byte_check_code=%lu",
+            (unsigned long)sn, (unsigned long)ts, (unsigned long)una,
+            (unsigned long)wnd, (unsigned long)byte_check_code);
+#else
         ikcp_log(kcp, IKCP_LOG_IN_DATA, "input psh: sn=%lu ts=%lu",
                  (unsigned long)sn, (unsigned long)ts);
+#endif
       }
       if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) < 0)
       {
+#if IKCP_BYTE_CHECK == 1
+        if (byte_check_code != 0)
+        {
+          IUINT8 byte_check_mode = kcp->byte_check_mode;
+          IUINT32 new_byte_check_code = 0;
+          if (byte_check_mode != 0)
+          {
+            if (byte_check_mode == 1)
+            {
+              new_byte_check_code = ikcp_crc32(0, data, len);
+            }
+            else if (byte_check_mode == 2)
+            {
+              new_byte_check_code = (IUINT32)ikcp_xxhash(data, len);
+            }
+            else
+            {
+              if (ikcp_canlog(kcp, IKCP_LOG_IN_DATA))
+              {
+                ikcp_log(kcp, IKCP_LOG_IN_DATA, "invalid byte check mode: %d",
+                         (int)byte_check_mode);
+              }
+              goto skip_byte_check;
+            }
+            if (new_byte_check_code != byte_check_code)
+            {
+              ikcp_log(kcp, IKCP_LOG_IN_DATA,
+                       "input psh: sn=%lu ts=%lu, byte_check_code=%lu not "
+                       "match new_byte_check_code=%lu, ignore segment",
+                       (unsigned long)sn, (unsigned long)ts,
+                       (unsigned long)byte_check_code,
+                       (unsigned long)new_byte_check_code);
+              goto skip_packet;
+            }
+          }
+        }
+      skip_byte_check:
+#endif
         ikcp_ack_push(kcp, sn, ts);
         if (_itimediff(sn, kcp->rcv_nxt) >= 0)
         {
@@ -942,6 +995,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
           seg->sn = sn;
           seg->una = una;
           seg->len = len;
+#if IKCP_BYTE_CHECK == 1
+          seg->byte_check_code = byte_check_code;
+#endif
 
           if (len > 0)
           {
@@ -977,6 +1033,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
       return -3;
     }
 
+#if IKCP_BYTE_CHECK == 1
+  skip_packet:
+#endif
     data += len;
     size -= len;
   }
@@ -1035,6 +1094,9 @@ static char *ikcp_encode_seg(char *ptr, const IKCPSEG *seg)
   ptr = ikcp_encode32u(ptr, seg->sn);
   ptr = ikcp_encode32u(ptr, seg->una);
   ptr = ikcp_encode32u(ptr, seg->len);
+#if IKCP_BYTE_CHECK == 1
+  ptr = ikcp_encode32u(ptr, seg->byte_check_code);
+#endif
   return ptr;
 }
 
@@ -1076,6 +1138,7 @@ void ikcp_flush(ikcpcb *kcp)
   seg.len = 0;
   seg.sn = 0;
   seg.ts = 0;
+  seg.byte_check_code = 0;
 
   // flush acknowledges
   count = kcp->ackcount;
@@ -1196,6 +1259,23 @@ void ikcp_flush(ikcpcb *kcp)
     newseg->rto = kcp->rx_rto;
     newseg->fastack = 0;
     newseg->xmit = 0;
+
+#if IKCP_BYTE_CHECK == 1
+    if (kcp->byte_check_mode == 1)
+    {
+      IUINT32 crc32 = ikcp_crc32(0, newseg->data, newseg->len);
+      newseg->byte_check_code = crc32;
+      ikcp_log(kcp, IKCP_LOG_OUT_DATA, "send sn=%lu, crc32=%lu",
+               (unsigned long)newseg->sn, (unsigned long)crc32);
+    }
+    else if (kcp->byte_check_mode == 2)
+    {
+      IUINT32 xxhash = (IUINT32)ikcp_xxhash(newseg->data, newseg->len);
+      newseg->byte_check_code = xxhash;
+      ikcp_log(kcp, IKCP_LOG_OUT_DATA, "send sn=%lu, xxhash=%lu",
+               (unsigned long)newseg->sn, (unsigned long)xxhash);
+    }
+#endif
   }
 
   // calculate resent
@@ -1275,6 +1355,12 @@ void ikcp_flush(ikcpcb *kcp)
       if (segment->len > 0)
       {
         memcpy(ptr, segment->data, segment->len);
+#if IKCP_BYTE_CHECK == 1
+        if (kcp->byte_check_test > 0 && segment->xmit < 2 && segment->sn > 500)
+        {
+          ptr[rand() % segment->len] = '\0';
+        }
+#endif
         ptr += segment->len;
       }
 
@@ -1467,6 +1553,25 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 
   return current + minimal;
 }
+
+#if IKCP_BYTE_CHECK == 1
+int ikcp_bytecheck(ikcpcb *kcp, char mode, char test)
+{
+  kcp->byte_check_mode = mode;
+  kcp->byte_check_test = test;
+  return 0;
+}
+
+IUINT32 ikcp_crc32(IUINT32 seed, const char *data, long size)
+{
+  return crc32(seed, data, size);
+}
+
+IUINT64 ikcp_xxhash(const char *data, long size)
+{
+  return XXH3_64bits(data, size);
+}
+#endif
 
 int ikcp_settoken(ikcpcb *kcp, int token)
 {
