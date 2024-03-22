@@ -414,6 +414,9 @@ extern "C"
   // check the size of next message in the recv queue
   int ikcp_peeksize(const ikcpcb *kcp);
 
+  // set token
+  int ikcp_settoken(ikcpcb *kcp, int token);
+
   // change MTU size, default is 1400
   int ikcp_setmtu(ikcpcb *kcp, int mtu);
 
